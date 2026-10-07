@@ -13,6 +13,16 @@ import './styles/App.css';
 // Autosave this long after the last change (and always when the window closes or reloads)
 const AUTOSAVE_DELAY_MS = 500;
 
+// Light/dark theme is remembered across restarts (stored in the app's profile folder)
+const THEME_KEY = 'excalidraw-desktop-theme';
+const loadTheme = (): 'light' | 'dark' => {
+  try {
+    return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+};
+
 const ExcalidrawDesktop: React.FC = () => {
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const currentFilePathRef = useRef<string | null>(null);
@@ -23,6 +33,7 @@ const ExcalidrawDesktop: React.FC = () => {
   const autosaveEnabledRef = useRef(false);
   const initialSceneRequestedRef = useRef(false);
   const autosaveErrorRef = useRef<string | null>(null);
+  const themeRef = useRef(loadTheme());
   const electronAPI = useElectronAPI();
 
   const serializeScene = useCallback(() => {
@@ -69,6 +80,16 @@ const ExcalidrawDesktop: React.FC = () => {
     window.clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = window.setTimeout(() => flushAutosave(), AUTOSAVE_DELAY_MS);
   }, [flushAutosave]);
+
+  const handleChange = useCallback((_elements: unknown, appState: { theme: 'light' | 'dark' }) => {
+    if (appState.theme !== themeRef.current) {
+      themeRef.current = appState.theme;
+      try {
+        localStorage.setItem(THEME_KEY, appState.theme);
+      } catch {}
+    }
+    scheduleAutosave();
+  }, [scheduleAutosave]);
 
   // Files are always autosaved; an untitled drawing is lost when New/Open replace it
   const hasUnsavedChanges = useCallback(() => {
@@ -206,11 +227,11 @@ const ExcalidrawDesktop: React.FC = () => {
       <div className="excalidraw-container">
         <Excalidraw
           excalidrawAPI={setExcalidrawAPI}
-          onChange={scheduleAutosave}
+          onChange={handleChange}
           initialData={{
             appState: {
               viewBackgroundColor: '#ffffff',
-              theme: 'light',
+              theme: themeRef.current,
             },
           }}
           UIOptions={{
