@@ -16,8 +16,35 @@ const copyExcalidrawFonts = (): Plugin => ({
   },
 });
 
+// CSP for the built app only; the dev server needs inline scripts and websockets for HMR
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' data: blob:",
+  "worker-src 'self' blob:",
+  "frame-src https:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
+
+const contentSecurityPolicy = (): Plugin => ({
+  name: 'content-security-policy',
+  apply: 'build',
+  transformIndexHtml: () => [
+    {
+      tag: 'meta',
+      attrs: { 'http-equiv': 'Content-Security-Policy', content: CSP },
+      injectTo: 'head-prepend',
+    },
+  ],
+});
+
 export default defineConfig({
-  plugins: [react(), copyExcalidrawFonts()],
+  plugins: [react(), copyExcalidrawFonts(), contentSecurityPolicy()],
   root: '.',
   base: './', // This is crucial for Electron!
   build: {
