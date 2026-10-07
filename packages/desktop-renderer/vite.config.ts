@@ -16,6 +16,24 @@ const copyExcalidrawFonts = (): Plugin => ({
   },
 });
 
+// Mermaid >= 11.16 (needed for its security fixes) prefixes rendered element ids with the
+// render id. @excalidraw/mermaid-to-excalidraw 2.2.2 looks elements up by unprefixed id, so
+// class/state/ER diagrams silently fall back to images. Strip the prefix before it parses.
+const fixMermaidElementIds = (): Plugin => ({
+  name: 'fix-mermaid-element-ids',
+  transform(code, id) {
+    if (!id.replace(/\\/g, '/').endsWith('/@excalidraw/mermaid-to-excalidraw/dist/parseMermaid.js')) return;
+    const anchor = 'svgContainer.innerHTML = svg;';
+    if (!code.includes(anchor)) {
+      throw new Error('mermaid-to-excalidraw changed: revisit fixMermaidElementIds in vite.config.ts');
+    }
+    return code.replace(
+      anchor,
+      anchor + ' svgContainer.querySelectorAll(`[id^="${renderId}-"]`).forEach((el) => { el.id = el.id.slice(renderId.length + 1); });',
+    );
+  },
+});
+
 // CSP for the built app only; the dev server needs inline scripts and websockets for HMR
 const CSP = [
   "default-src 'self'",
@@ -44,7 +62,7 @@ const contentSecurityPolicy = (): Plugin => ({
 });
 
 export default defineConfig({
-  plugins: [react(), copyExcalidrawFonts(), contentSecurityPolicy()],
+  plugins: [react(), copyExcalidrawFonts(), fixMermaidElementIds(), contentSecurityPolicy()],
   root: '.',
   base: './', // This is crucial for Electron!
   build: {
