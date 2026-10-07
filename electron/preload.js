@@ -19,8 +19,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     callback(filePath, content);
   }),
 
-  // Renderer has registered its listeners; main may now send pending files
-  rendererReady: () => ipcRenderer.send('renderer-ready'),
+  // Scene to show after (re)load: a file passed on the command line or the last session.
+  // Call once listeners are registered; main sends later files via 'file-opened'.
+  getInitialScene: () => ipcRenderer.invoke('get-initial-scene'),
+
+  // Autosave to the open file (filePath) or the untitled drawing (null);
+  // content null only records which file is open
+  autosave: (filePath, content) => ipcRenderer.invoke('autosave', filePath, content),
+  autosaveSync: (filePath, content) => ipcRenderer.sendSync('autosave-sync', filePath, content),
 
   // Remove listeners
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)

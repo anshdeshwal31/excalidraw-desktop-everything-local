@@ -9,7 +9,9 @@ interface ElectronAPI {
   onMenuSaveAs: (callback: () => void) => void;
   onMenuImportMermaid: (callback: () => void) => void;
   onFileOpened: (callback: (filePath: string, content: string) => void) => void;
-  rendererReady: () => void;
+  getInitialScene: () => Promise<{ filePath: string | null; content: string } | null>;
+  autosave: (filePath: string | null, content: string | null) => Promise<boolean>;
+  autosaveSync: (filePath: string | null, content: string) => true | string;
   removeAllListeners: (channel: string) => void;
 }
 

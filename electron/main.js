@@ -9,6 +9,10 @@ let rendererReady = false;
 // Only files the user opened or picked in the save dialog may be written by the renderer
 const allowedWritePaths = new Set();
 
+// Autosave: which file is open (null = untitled) and the untitled drawing,
+// restored on the next start or after a reload
+const SESSION_FILE = path.join(app.getPath('userData'), 'session.json');
+const UNTITLED_FILE = path.join(app.getPath('userData'), 'untitled.excalidraw');
 
 // Check if launched with a file argument (double-click on .excalidraw file)
 const fileArg = process.argv.find(arg =>
@@ -21,7 +25,7 @@ if (fileArg && fs.existsSync(fileArg)) {
 function openFileInRenderer(filePath) {
   if (!filePath) return;
   if (!mainWindow || !rendererReady) {
-    // Sent when the renderer reports it is listening (see 'renderer-ready')
+    // Picked up when the renderer asks for its initial scene (see 'get-initial-scene')
     fileToOpenOnReady = filePath;
     return;
   }
@@ -68,7 +72,7 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // A reload replaces the page and its listeners; queue files until it reports ready again
+  // A reload replaces the page and its listeners; queue files until it asks for its initial scene again
   mainWindow.webContents.on('did-navigate', () => {
     rendererReady = false;
   });
@@ -243,21 +247,44 @@ function createMenu() {
 // IPC handlers
 ipcMain.handle('get-app-version', () => app.getVersion());
 
-ipcMain.on('renderer-ready', (event) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) return;
+// The renderer asks once it is listening: a file from the command line / second instance,
+// otherwise whatever was open last time (a file, or the untitled drawing)
+ipcMain.handle('get-initial-scene', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return null;
   rendererReady = true;
-  if (fileToOpenOnReady) {
-    const filePath = fileToOpenOnReady;
-    fileToOpenOnReady = null;
-    openFileInRenderer(filePath);
+  let filePath = fileToOpenOnReady;
+  fileToOpenOnReady = null;
+  if (!filePath) {
+    try {
+      filePath = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8')).filePath || null;
+    } catch {}
+    // Last file was moved or deleted: start empty rather than show an older untitled drawing
+    if (filePath && !fs.existsSync(filePath)) return null;
   }
+  try {
+    if (filePath) {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      allowedWritePaths.add(path.resolve(filePath));
+      return { filePath, content };
+    }
+    if (fs.existsSync(UNTITLED_FILE)) {
+      return { filePath: null, content: fs.readFileSync(UNTITLED_FILE, 'utf-8') };
+    }
+  } catch (err) {
+    dialog.showErrorBox('Failed to open file', err.message);
+  }
+  return null;
 });
 
-ipcMain.handle('write-file', async (event, filePath, content) => {
+function allowedWriteTarget(filePath) {
   const target = path.resolve(String(filePath));
   if (!allowedWritePaths.has(target)) {
     throw new Error('Refusing to write a file that was not opened or chosen in the save dialog');
   }
+  return target;
+}
+
+function assertExcalidrawScene(content) {
   let data = null;
   try {
     data = typeof content === 'string' ? JSON.parse(content) : null;
@@ -265,8 +292,44 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
   if (!data || data.type !== 'excalidraw') {
     throw new Error('Refusing to write content that is not an Excalidraw scene');
   }
+}
+
+function rememberOpenFile(target) {
+  fs.writeFileSync(SESSION_FILE, JSON.stringify({ filePath: target }), 'utf-8');
+}
+
+ipcMain.handle('write-file', async (event, filePath, content) => {
+  const target = allowedWriteTarget(filePath);
+  assertExcalidrawScene(content);
   fs.writeFileSync(target, content, 'utf-8');
+  rememberOpenFile(target);
   return true;
+});
+
+// Autosave writes to the open file, or to the untitled drawing when no file is open.
+// Without content it only records which file is open.
+function autosave(filePath, content) {
+  const target = filePath ? allowedWriteTarget(filePath) : null;
+  if (content != null) {
+    assertExcalidrawScene(content);
+    fs.writeFileSync(target || UNTITLED_FILE, content, 'utf-8');
+  }
+  rememberOpenFile(target);
+}
+
+ipcMain.handle('autosave', (event, filePath, content) => {
+  autosave(filePath, content);
+  return true;
+});
+
+// Synchronous variant for the final save while the page unloads (window closed or reloaded)
+ipcMain.on('autosave-sync', (event, filePath, content) => {
+  try {
+    autosave(filePath, content);
+    event.returnValue = true;
+  } catch (err) {
+    event.returnValue = err.message;
+  }
 });
 
 ipcMain.handle('show-save-dialog', async () => {
