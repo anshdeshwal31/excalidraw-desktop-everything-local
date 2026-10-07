@@ -1,0 +1,18 @@
+.excalidraw-desktop {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.excalidraw-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Override Excalidraw styles for desktop */
+.excalidraw-container .excalidraw {
+  height: 100% !important;
+}

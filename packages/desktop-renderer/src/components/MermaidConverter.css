@@ -1,0 +1,249 @@
+.mermaid-converter-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.mermaid-converter-modal {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  width: 90%;
+  max-width: 960px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Header */
+.mermaid-converter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid #e8e8e8;
+}
+
+.mermaid-converter-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1b1b1f;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.close-button:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+/* Body - two panels side by side */
+.mermaid-converter-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Panel header */
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #e8e8e8;
+  background: #fafafa;
+}
+
+/* Input panel (left) */
+.mermaid-input-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e8e8e8;
+  min-width: 0;
+}
+
+.mermaid-input-panel textarea {
+  flex: 1;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+  min-height: 250px;
+  box-sizing: border-box;
+  color: #1b1b1f;
+}
+
+.mermaid-input-panel textarea::placeholder {
+  color: #aaa;
+}
+
+.example-link {
+  background: none;
+  border: none;
+  color: #6965db;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.example-link:hover {
+  background: #f0effb;
+}
+
+/* Error */
+.error-message {
+  background: #fef2f2;
+  color: #991b1b;
+  padding: 10px 16px;
+  font-size: 13px;
+  border-top: 1px solid #fecaca;
+}
+
+/* Button row */
+.button-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #e8e8e8;
+}
+
+.convert-button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #6965db;
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.convert-button:hover:not(:disabled) {
+  background: #5b57c9;
+}
+
+.convert-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.insert-button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #22c55e;
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.insert-button:hover {
+  background: #16a34a;
+}
+
+/* Shortcut hint */
+.shortcut-hint {
+  padding: 0 16px 10px;
+  font-size: 11px;
+  color: #999;
+}
+
+/* Preview panel (right) */
+.mermaid-preview-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #fafafa;
+}
+
+.element-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: #888;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.preview-canvas {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  min-height: 250px;
+}
+
+.preview-canvas canvas {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+.preview-placeholder {
+  color: #aaa;
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+/* Responsive: stack panels vertically on narrow screens */
+@media (max-width: 700px) {
+  .mermaid-converter-body {
+    flex-direction: column;
+  }
+
+  .mermaid-input-panel {
+    border-right: none;
+    border-bottom: 1px solid #e8e8e8;
+  }
+
+  .mermaid-input-panel textarea {
+    min-height: 150px;
+  }
+
+  .preview-canvas {
+    min-height: 150px;
+  }
+}

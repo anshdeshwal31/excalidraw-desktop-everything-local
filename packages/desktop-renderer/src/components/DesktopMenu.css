@@ -1,0 +1,67 @@
+.desktop-menu {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+.menu-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.menu-button {
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+  color: #333;
+}
+
+.menu-button:hover {
+  background: #e9ecef;
+  border-color: #007bff;
+}
+
+.menu-button:active {
+  background: #dee2e6;
+}
+
+.mermaid-button {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.mermaid-button:hover {
+  background: #0056b3;
+  border-color: #0056b3;
+}
+
+.file-name {
+  font-size: 14px;
+  color: #666;
+  font-weight: 500;
+  padding: 6px 12px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.menu-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.menu-button:disabled:hover {
+  background: white;
+  border-color: #ddd;
+}
