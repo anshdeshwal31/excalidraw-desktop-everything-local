@@ -13,8 +13,8 @@
     "lint": "eslint src --ext .ts,.tsx --fix"
   },
   "dependencies": {
-    "@excalidraw/excalidraw": "0.17.1-7381-cdf6d3e",
-    "@excalidraw/mermaid-to-excalidraw": "1.1.0",
+    "@excalidraw/excalidraw": "0.18.1",
+    "@excalidraw/mermaid-to-excalidraw": "2.2.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
