@@ -1,163 +1,112 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Excalidraw } from '@excalidraw/excalidraw';
+import {
+  Excalidraw,
+  CaptureUpdateAction,
+  hashElementsVersion,
+  loadFromBlob,
+  serializeAsJSON,
+} from '@excalidraw/excalidraw';
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
+import '@excalidraw/excalidraw/index.css';
 import { useElectronAPI } from './hooks/useElectronAPI';
 import './styles/App.css';
 
-interface PendingFile {
-  filePath: string;
-  data: any;
-}
-
 const ExcalidrawDesktop: React.FC = () => {
-  const [currentFileName, setCurrentFileName] = useState('Untitled');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-
-  const excalidrawRef = useRef<any>(null);
+  const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const currentFilePathRef = useRef<string | null>(null);
-  const pendingFileRef = useRef<PendingFile | null>(null);
-  const apiReadyRef = useRef(false);
+  // Elements version hash at the last open/save/new, used to detect unsaved changes
+  const savedVersionRef = useRef(0);
   const electronAPI = useElectronAPI();
 
-  // Apply file data to the Excalidraw scene (only when API is ready)
-  const applyFileToScene = useCallback((filePath: string, data: any) => {
-    const api = excalidrawRef.current;
-    if (!api) {
-      // API not ready yet — store and poll until ready
-      console.log('[ExcalidrawDesktop] API not ready, queuing file and polling...');
-      pendingFileRef.current = { filePath, data };
-      const interval = setInterval(() => {
-        if (excalidrawRef.current) {
-          clearInterval(interval);
-          console.log('[ExcalidrawDesktop] API became ready, applying queued file');
-          const pending = pendingFileRef.current;
-          if (pending) {
-            pendingFileRef.current = null;
-            applyFileToScene(pending.filePath, pending.data);
-          }
-        }
-      }, 200);
-      // Safety: stop polling after 10 seconds
-      setTimeout(() => clearInterval(interval), 10000);
-      return;
-    }
-
-    console.log('[ExcalidrawDesktop] Applying', data.elements?.length, 'elements to scene');
-    api.updateScene({
-      elements: data.elements || [],
-    });
-    if (data.files) {
-      api.addFiles(Object.values(data.files));
-    }
-    api.scrollToContent(data.elements || [], { fitToContent: true });
-
-    currentFilePathRef.current = filePath;
-    setCurrentFileName(
-      filePath.split('/').pop()?.split('\\').pop() || 'Untitled'
-    );
-    setHasUnsavedChanges(false);
-  }, []);
+  const hasUnsavedChanges = useCallback(() => {
+    if (!excalidrawAPI) return false;
+    return hashElementsVersion(excalidrawAPI.getSceneElementsIncludingDeleted()) !== savedVersionRef.current;
+  }, [excalidrawAPI]);
 
   // Handle file-opened event from main process
-  const handleFileOpened = useCallback((filePath: string, content: string) => {
-    console.log('[ExcalidrawDesktop] file-opened received, path:', filePath, 'length:', content?.length);
+  const handleFileOpened = useCallback(async (filePath: string, content: string) => {
+    if (!excalidrawAPI) return;
     try {
-      const data = JSON.parse(content);
-      applyFileToScene(filePath, data);
+      const scene = await loadFromBlob(
+        new Blob([content], { type: 'application/json' }),
+        excalidrawAPI.getAppState(),
+        excalidrawAPI.getSceneElementsIncludingDeleted(),
+      );
+      excalidrawAPI.addFiles(Object.values(scene.files));
+      excalidrawAPI.updateScene({
+        elements: scene.elements,
+        appState: scene.appState,
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+      excalidrawAPI.history.clear();
+      if (scene.elements.length > 0) {
+        excalidrawAPI.scrollToContent(scene.elements, { fitToContent: true });
+      }
+      currentFilePathRef.current = filePath;
+      savedVersionRef.current = hashElementsVersion(excalidrawAPI.getSceneElementsIncludingDeleted());
     } catch (err) {
-      console.error('[ExcalidrawDesktop] Failed to parse file:', err);
+      console.error('[ExcalidrawDesktop] Failed to open file:', err);
       alert('Failed to open file. It may not be a valid Excalidraw file.');
     }
-  }, [applyFileToScene]);
-
-  // Excalidraw ref callback — fires when the component mounts
-  const excalidrawRefCallback = useCallback((api: any) => {
-    console.log('[ExcalidrawDesktop] ref callback fired, api:', !!api);
-    excalidrawRef.current = api;
-  }, []);
+  }, [excalidrawAPI]);
 
   const handleNew = useCallback(() => {
-    if (hasUnsavedChanges) {
-      if (!confirm('You have unsaved changes. Create a new file?')) {
-        return;
-      }
+    if (!excalidrawAPI) return;
+    if (hasUnsavedChanges() && !confirm('You have unsaved changes. Create a new file?')) {
+      return;
     }
-    const api = excalidrawRef.current;
-    if (api) {
-      api.resetScene();
-    }
+    excalidrawAPI.resetScene();
     currentFilePathRef.current = null;
-    setCurrentFileName('Untitled');
-    setHasUnsavedChanges(false);
-  }, [hasUnsavedChanges]);
+    savedVersionRef.current = hashElementsVersion(excalidrawAPI.getSceneElementsIncludingDeleted());
+  }, [excalidrawAPI, hasUnsavedChanges]);
 
-  const getSceneData = useCallback(() => {
-    const api = excalidrawRef.current;
-    if (!api) return null;
-    return {
-      type: 'excalidraw',
-      version: 2,
-      elements: api.getSceneElements(),
-      appState: api.getAppState(),
-      files: api.getFiles(),
-    };
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    if (!electronAPI) return;
-    const data = getSceneData();
-    if (!data) return;
+  const saveScene = useCallback(async (saveAs: boolean) => {
+    if (!electronAPI || !excalidrawAPI) return;
 
     let filePath = currentFilePathRef.current;
-    if (!filePath) {
+    if (saveAs || !filePath) {
+      // Main process appends .excalidraw and allows writing to the chosen path
       const result = await electronAPI.showSaveDialog();
       if (result.canceled || !result.filePath) return;
       filePath = result.filePath;
-      if (!filePath.endsWith('.excalidraw')) {
-        filePath += '.excalidraw';
-      }
-      currentFilePathRef.current = filePath;
-      setCurrentFileName(
-        filePath.split('/').pop()?.split('\\').pop() || 'Untitled'
-      );
     }
-    await electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
-    setHasUnsavedChanges(false);
-  }, [electronAPI, getSceneData]);
 
-  const handleSaveAs = useCallback(async () => {
-    if (!electronAPI) return;
-    const result = await electronAPI.showSaveDialog();
-    if (result.canceled || !result.filePath) return;
-
-    const data = getSceneData();
-    if (!data) return;
-
-    let filePath = result.filePath;
-    if (!filePath.endsWith('.excalidraw')) {
-      filePath += '.excalidraw';
-    }
-    await electronAPI.writeFile(filePath, JSON.stringify(data, null, 2));
-    currentFilePathRef.current = filePath;
-    setCurrentFileName(
-      filePath.split('/').pop()?.split('\\').pop() || 'Untitled'
+    const version = hashElementsVersion(excalidrawAPI.getSceneElementsIncludingDeleted());
+    const json = serializeAsJSON(
+      excalidrawAPI.getSceneElements(),
+      excalidrawAPI.getAppState(),
+      excalidrawAPI.getFiles(),
+      'local',
     );
-    setHasUnsavedChanges(false);
-  }, [electronAPI, getSceneData]);
+    try {
+      await electronAPI.writeFile(filePath, json);
+    } catch (err) {
+      console.error('[ExcalidrawDesktop] Failed to save file:', err);
+      alert(`Failed to save file: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+    currentFilePathRef.current = filePath;
+    savedVersionRef.current = version;
+  }, [electronAPI, excalidrawAPI]);
 
-  // Register Electron menu event handlers
+  const handleSave = useCallback(() => saveScene(false), [saveScene]);
+  const handleSaveAs = useCallback(() => saveScene(true), [saveScene]);
+
+  // Register Electron menu event handlers once both APIs are available
   useEffect(() => {
-    if (!electronAPI) return;
+    if (!electronAPI || !excalidrawAPI) return;
 
     electronAPI.onMenuNew(handleNew);
     electronAPI.onMenuSave(handleSave);
     electronAPI.onMenuSaveAs(handleSaveAs);
     electronAPI.onMenuImportMermaid(() => {
-      const api = excalidrawRef.current;
-      if (api) {
-        api.setOpenDialog({ name: 'ttd', tab: 'mermaid' });
-      }
+      excalidrawAPI.updateScene({
+        appState: { openDialog: { name: 'ttd', tab: 'mermaid' } },
+      });
     });
     electronAPI.onFileOpened(handleFileOpened);
+    // Tell main it can now send files (e.g. from double-click launch)
+    electronAPI.rendererReady();
 
     return () => {
       electronAPI.removeAllListeners('menu-new');
@@ -166,32 +115,19 @@ const ExcalidrawDesktop: React.FC = () => {
       electronAPI.removeAllListeners('menu-import-mermaid');
       electronAPI.removeAllListeners('file-opened');
     };
-  }, [electronAPI, handleNew, handleSave, handleSaveAs, handleFileOpened]);
-
-  const handleChange = useCallback((...args: any[]) => {
-    // The first onChange call confirms Excalidraw is fully mounted
-    // Use the excalidrawAPI from the ref callback or detect it here
-    if (!apiReadyRef.current && excalidrawRef.current) {
-      apiReadyRef.current = true;
-      console.log('[ExcalidrawDesktop] API confirmed ready via onChange');
-    }
-    if (!hasUnsavedChanges) {
-      setHasUnsavedChanges(true);
-    }
-  }, [hasUnsavedChanges]);
+  }, [electronAPI, excalidrawAPI, handleNew, handleSave, handleSaveAs, handleFileOpened]);
 
   return (
     <div className="excalidraw-desktop">
       <div className="excalidraw-container">
         <Excalidraw
-          ref={excalidrawRefCallback}
+          excalidrawAPI={setExcalidrawAPI}
           initialData={{
             appState: {
               viewBackgroundColor: '#ffffff',
               theme: 'light',
             },
           }}
-          onChange={handleChange}
           UIOptions={{
             canvasActions: {
               loadScene: false,

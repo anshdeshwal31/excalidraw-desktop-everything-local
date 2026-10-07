@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     callback(filePath, content);
   }),
 
+  // Renderer has registered its listeners; main may now send pending files
+  rendererReady: () => ipcRenderer.send('renderer-ready'),
+
   // Remove listeners
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
 });

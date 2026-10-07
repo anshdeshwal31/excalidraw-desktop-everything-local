@@ -1,10 +1,14 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const isDev = process.env.NODE_ENV === 'development';
 
 let mainWindow;
 let fileToOpenOnReady = null;
+let rendererReady = false;
+// Only files the user opened or picked in the save dialog may be written by the renderer
+const allowedWritePaths = new Set();
+
 
 // Check if launched with a file argument (double-click on .excalidraw file)
 const fileArg = process.argv.find(arg =>
@@ -15,11 +19,15 @@ if (fileArg && fs.existsSync(fileArg)) {
 }
 
 function openFileInRenderer(filePath) {
-  if (!mainWindow || !filePath) return;
+  if (!filePath) return;
+  if (!mainWindow || !rendererReady) {
+    // Sent when the renderer reports it is listening (see 'renderer-ready')
+    fileToOpenOnReady = filePath;
+    return;
+  }
   try {
-    console.log('[Main] Reading file:', filePath);
     const content = fs.readFileSync(filePath, 'utf-8');
-    console.log('[Main] File read OK, length:', content.length, '- sending to renderer');
+    allowedWritePaths.add(path.resolve(filePath));
     mainWindow.webContents.send('file-opened', filePath, content);
   } catch (err) {
     console.error('[Main] Failed to read file:', err);
@@ -36,7 +44,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      enableRemoteModule: false,
+      sandbox: true,
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, process.platform === 'darwin'
@@ -60,16 +68,28 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // Wait for renderer to fully load before opening a file
-  mainWindow.webContents.on('did-finish-load', () => {
-    console.log('[Main] Renderer finished loading');
-    if (fileToOpenOnReady) {
-      // Give React time to mount and register listeners
-      setTimeout(() => {
-        console.log('[Main] Opening file from launch arg:', fileToOpenOnReady);
-        openFileInRenderer(fileToOpenOnReady);
-        fileToOpenOnReady = null;
-      }, 1500);
+  // A reload replaces the page and its listeners; queue files until it reports ready again
+  mainWindow.webContents.on('did-navigate', () => {
+    rendererReady = false;
+  });
+
+  // Never open new windows or navigate away from the app; web links go to the default browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalLink(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault();
+    openExternalLink(url);
+  });
+
+  // Excalidraw treats Shift+S as "pick stroke colour" even with Ctrl held,
+  // so handle Ctrl+Shift+S here and keep it away from the page
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && (input.control || input.meta) && input.shift &&
+        input.key.toLowerCase() === 's') {
+      event.preventDefault();
+      if (!input.isAutoRepeat) mainWindow.webContents.send('menu-save-as');
     }
   });
 
@@ -82,14 +102,16 @@ function createWindow() {
   });
 }
 
+function openExternalLink(url) {
+  if (/^(https?|mailto):/i.test(url)) {
+    shell.openExternal(url);
+  }
+}
+
 // macOS: handle file open via Finder / double-click
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  if (mainWindow) {
-    openFileInRenderer(filePath);
-  } else {
-    fileToOpenOnReady = filePath;
-  }
+  openFileInRenderer(filePath);
 });
 
 // Windows: handle second instance with file argument
@@ -207,7 +229,8 @@ function createMenu() {
     {
       label: 'Window',
       submenu: [
-        { role: 'minimize' },
+        // The minimize role defaults to Ctrl+M, which would shadow Import Mermaid
+        { role: 'minimize', accelerator: '' },
         { role: 'close' }
       ]
     }
@@ -220,21 +243,45 @@ function createMenu() {
 // IPC handlers
 ipcMain.handle('get-app-version', () => app.getVersion());
 
-ipcMain.handle('read-file', async (event, filePath) => {
-  return fs.readFileSync(filePath, 'utf-8');
+ipcMain.on('renderer-ready', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return;
+  rendererReady = true;
+  if (fileToOpenOnReady) {
+    const filePath = fileToOpenOnReady;
+    fileToOpenOnReady = null;
+    openFileInRenderer(filePath);
+  }
 });
 
 ipcMain.handle('write-file', async (event, filePath, content) => {
-  fs.writeFileSync(filePath, content, 'utf-8');
+  const target = path.resolve(String(filePath));
+  if (!allowedWritePaths.has(target)) {
+    throw new Error('Refusing to write a file that was not opened or chosen in the save dialog');
+  }
+  let data = null;
+  try {
+    data = typeof content === 'string' ? JSON.parse(content) : null;
+  } catch {}
+  if (!data || data.type !== 'excalidraw') {
+    throw new Error('Refusing to write content that is not an Excalidraw scene');
+  }
+  fs.writeFileSync(target, content, 'utf-8');
   return true;
 });
 
 ipcMain.handle('show-save-dialog', async () => {
-  return dialog.showSaveDialog(mainWindow, {
+  const result = await dialog.showSaveDialog(mainWindow, {
     filters: [
-      { name: 'Excalidraw Files', extensions: ['excalidraw'] },
-      { name: 'PNG Images', extensions: ['png'] },
-      { name: 'SVG Images', extensions: ['svg'] }
+      { name: 'Excalidraw Files', extensions: ['excalidraw'] }
     ]
   });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  let filePath = result.filePath;
+  if (!filePath.toLowerCase().endsWith('.excalidraw')) {
+    filePath += '.excalidraw';
+  }
+  allowedWritePaths.add(path.resolve(filePath));
+  return { canceled: false, filePath };
 });

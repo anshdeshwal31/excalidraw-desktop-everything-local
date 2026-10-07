@@ -9,6 +9,7 @@ interface ElectronAPI {
   onMenuSaveAs: (callback: () => void) => void;
   onMenuImportMermaid: (callback: () => void) => void;
   onFileOpened: (callback: (filePath: string, content: string) => void) => void;
+  rendererReady: () => void;
   removeAllListeners: (channel: string) => void;
 }
 
