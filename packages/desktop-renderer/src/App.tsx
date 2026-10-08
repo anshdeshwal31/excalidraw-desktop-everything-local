@@ -5,9 +5,10 @@ import {
   loadFromBlob,
   serializeAsJSON,
 } from '@excalidraw/excalidraw';
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
+import type { AppState, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import '@excalidraw/excalidraw/index.css';
 import { useElectronAPI } from './hooks/useElectronAPI';
+import { ProjectBar, getProjectName } from './components/ProjectBar';
 import './styles/App.css';
 
 // Autosave this long after the last change (and always when the window closes or reloads)
@@ -35,6 +36,19 @@ const ExcalidrawDesktop: React.FC = () => {
   const autosaveErrorRef = useRef<string | null>(null);
   const themeRef = useRef(loadTheme());
   const electronAPI = useElectronAPI();
+
+  // Project tabs: the list is owned by the main process; openFilePath marks the active tab
+  const [projects, setProjects] = useState<string[]>([]);
+  const [openFilePath, setOpenFilePath] = useState<string | null>(null);
+  const [theme, setTheme] = useState(themeRef.current);
+  // Where each project was scrolled/zoomed, so switching back lands on the same spot
+  const projectViewsRef = useRef(new Map<string, Pick<AppState, 'scrollX' | 'scrollY' | 'zoom'>>());
+  const switchingRef = useRef(false);
+
+  const setOpenFile = useCallback((filePath: string | null) => {
+    currentFilePathRef.current = filePath;
+    setOpenFilePath(filePath);
+  }, []);
 
   const serializeScene = useCallback(() => {
     if (!excalidrawAPI) return null;
@@ -84,6 +98,7 @@ const ExcalidrawDesktop: React.FC = () => {
   const handleChange = useCallback((_elements: unknown, appState: { theme: 'light' | 'dark' }) => {
     if (appState.theme !== themeRef.current) {
       themeRef.current = appState.theme;
+      setTheme(appState.theme);
       try {
         localStorage.setItem(THEME_KEY, appState.theme);
       } catch {}
@@ -114,7 +129,7 @@ const ExcalidrawDesktop: React.FC = () => {
       if (scene.elements.length > 0) {
         excalidrawAPI.scrollToContent(scene.elements, { fitToContent: true });
       }
-      currentFilePathRef.current = filePath;
+      setOpenFile(filePath);
       // updateScene applies appState asynchronously, so take the loaded appState for the baseline
       savedJsonRef.current = serializeAsJSON(
         excalidrawAPI.getSceneElements(),
@@ -130,7 +145,7 @@ const ExcalidrawDesktop: React.FC = () => {
       console.error('[ExcalidrawDesktop] Failed to open file:', err);
       alert('Failed to open file. It may not be a valid Excalidraw file.');
     }
-  }, [electronAPI, excalidrawAPI, serializeScene]);
+  }, [electronAPI, excalidrawAPI, serializeScene, setOpenFile]);
 
   // Handle file-opened event from main process
   const handleFileOpened = useCallback(async (filePath: string, content: string) => {
@@ -148,11 +163,11 @@ const ExcalidrawDesktop: React.FC = () => {
     }
     flushAutosave(); // keep pending edits of the current file
     excalidrawAPI.resetScene();
-    currentFilePathRef.current = null;
+    setOpenFile(null);
     // The empty canvas becomes the untitled drawing
     savedJsonRef.current = null;
     scheduleAutosave();
-  }, [excalidrawAPI, hasUnsavedChanges, flushAutosave, scheduleAutosave]);
+  }, [excalidrawAPI, hasUnsavedChanges, flushAutosave, scheduleAutosave, setOpenFile]);
 
   const saveScene = useCallback(async (saveAs: boolean) => {
     if (!electronAPI || !excalidrawAPI) return;
@@ -176,12 +191,102 @@ const ExcalidrawDesktop: React.FC = () => {
       alert(`Failed to save file: ${err instanceof Error ? err.message : err}`);
       return;
     }
-    currentFilePathRef.current = filePath;
+    setOpenFile(filePath);
     savedJsonRef.current = json;
-  }, [electronAPI, excalidrawAPI, serializeScene]);
+  }, [electronAPI, excalidrawAPI, serializeScene, setOpenFile]);
 
   const handleSave = useCallback(() => saveScene(false), [saveScene]);
   const handleSaveAs = useCallback(() => saveScene(true), [saveScene]);
+
+  useEffect(() => {
+    if (!electronAPI) return;
+    electronAPI.getProjects().then(setProjects);
+    electronAPI.onProjectsChanged(setProjects);
+    return () => electronAPI.removeAllListeners('projects-changed');
+  }, [electronAPI]);
+
+  // Switch to another project in one step; the project being left is autosaved, not discarded
+  const switchProject = useCallback(async (filePath: string) => {
+    if (!electronAPI || !excalidrawAPI || switchingRef.current) return false;
+    if (filePath === currentFilePathRef.current) return true;
+    switchingRef.current = true;
+    try {
+      // Finish any text being typed so it's part of the autosave
+      (document.activeElement as HTMLElement | null)?.blur();
+
+      let content: string;
+      try {
+        content = await electronAPI.openProject(filePath);
+      } catch {
+        if (confirm(`Couldn't open "${getProjectName(filePath)}". It may have been moved or deleted.\n\nRemove it from projects?`)) {
+          electronAPI.removeProject(filePath);
+        }
+        return false;
+      }
+
+      const leaving = currentFilePathRef.current;
+      if (leaving) {
+        const { scrollX, scrollY, zoom } = excalidrawAPI.getAppState();
+        projectViewsRef.current.set(leaving, { scrollX, scrollY, zoom });
+      }
+
+      await handleFileOpened(filePath, content);
+      if (currentFilePathRef.current !== filePath) return false;
+
+      const view = projectViewsRef.current.get(filePath);
+      if (view) {
+        excalidrawAPI.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
+      }
+      return true;
+    } finally {
+      switchingRef.current = false;
+    }
+  }, [electronAPI, excalidrawAPI, handleFileOpened]);
+
+  // Removes the tab, not the file; closing the open project moves to its neighbour
+  const removeProject = useCallback(async (filePath: string) => {
+    if (!electronAPI || switchingRef.current) return;
+    if (filePath === currentFilePathRef.current) {
+      const index = projects.indexOf(filePath);
+      const neighbor = projects[index + 1] ?? projects[index - 1];
+      if (!neighbor || !(await switchProject(neighbor))) {
+        handleNew();
+      }
+    }
+    projectViewsRef.current.delete(filePath);
+    electronAPI.removeProject(filePath);
+  }, [electronAPI, projects, switchProject, handleNew]);
+
+  const handleAddProjects = useCallback(async () => {
+    if (!electronAPI) return;
+    const added = await electronAPI.addProjects();
+    if (added.length > 0) switchProject(added[0]);
+  }, [electronAPI, switchProject]);
+
+  // Ctrl/Cmd+Tab cycles through projects, Ctrl/Cmd+1..9 jumps straight to one
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || projects.length === 0) return;
+
+      let target: string | undefined;
+      if (event.key === 'Tab') {
+        const index = projects.indexOf(currentFilePathRef.current ?? '');
+        const step = event.shiftKey ? -1 : 1;
+        target = index === -1
+          ? projects[step > 0 ? 0 : projects.length - 1]
+          : projects[(index + step + projects.length) % projects.length];
+      } else if (!event.shiftKey && /^(Digit|Numpad)[1-9]$/.test(event.code)) {
+        target = projects[Number(event.code.slice(-1)) - 1];
+      }
+      if (!target) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      switchProject(target);
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [projects, switchProject]);
 
   // Register Electron menu event handlers once both APIs are available
   useEffect(() => {
@@ -224,6 +329,14 @@ const ExcalidrawDesktop: React.FC = () => {
 
   return (
     <div className="excalidraw-desktop">
+      <ProjectBar
+        projects={projects}
+        activePath={openFilePath}
+        theme={theme}
+        onSwitch={switchProject}
+        onRemove={removeProject}
+        onAdd={handleAddProjects}
+      />
       <div className="excalidraw-container">
         <Excalidraw
           excalidrawAPI={setExcalidrawAPI}
