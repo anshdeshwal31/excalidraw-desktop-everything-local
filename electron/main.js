@@ -14,6 +14,34 @@ const allowedWritePaths = new Set();
 const SESSION_FILE = path.join(app.getPath('userData'), 'session.json');
 const UNTITLED_FILE = path.join(app.getPath('userData'), 'untitled.excalidraw');
 
+// Projects: every file the user opens, saves or adds becomes a tab for one-click switching
+const PROJECTS_FILE = path.join(app.getPath('userData'), 'projects.json');
+let projects = loadProjects();
+
+function loadProjects() {
+  try {
+    const list = JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf-8'));
+    return Array.isArray(list) ? list.filter(p => typeof p === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function setProjects(next) {
+  projects = next;
+  try {
+    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects), 'utf-8');
+  } catch (err) {
+    console.error('[Main] Failed to save projects list:', err);
+  }
+  if (mainWindow) mainWindow.webContents.send('projects-changed', projects);
+}
+
+function addProjects(filePaths) {
+  const added = filePaths.map(p => path.resolve(p)).filter(p => !projects.includes(p));
+  if (added.length > 0) setProjects([...projects, ...added]);
+}
+
 // Check if launched with a file argument (double-click on .excalidraw file)
 const fileArg = process.argv.find(arg =>
   arg.endsWith('.excalidraw') && !arg.startsWith('-')
@@ -303,6 +331,7 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
   assertExcalidrawScene(content);
   fs.writeFileSync(target, content, 'utf-8');
   rememberOpenFile(target);
+  addProjects([target]);
   return true;
 });
 
@@ -315,6 +344,8 @@ function autosave(filePath, content) {
     fs.writeFileSync(target || UNTITLED_FILE, content, 'utf-8');
   }
   rememberOpenFile(target);
+  // No content means a file was just opened
+  if (target && content == null) addProjects([target]);
 }
 
 ipcMain.handle('autosave', (event, filePath, content) => {
@@ -330,6 +361,37 @@ ipcMain.on('autosave-sync', (event, filePath, content) => {
   } catch (err) {
     event.returnValue = err.message;
   }
+});
+
+ipcMain.handle('get-projects', () => projects);
+
+// Only files in the projects list (opened, saved or added by the user) can be read this way
+ipcMain.handle('open-project', (event, filePath) => {
+  const target = path.resolve(String(filePath));
+  if (!projects.includes(target)) {
+    throw new Error('Not in the projects list');
+  }
+  const content = fs.readFileSync(target, 'utf-8');
+  allowedWritePaths.add(target);
+  return content;
+});
+
+ipcMain.handle('add-projects', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Add Projects',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Excalidraw Files', extensions: ['excalidraw'] }]
+  });
+  if (result.canceled) return [];
+  addProjects(result.filePaths);
+  return result.filePaths.map(p => path.resolve(p));
+});
+
+// Removes the tab only; the file itself is left alone
+ipcMain.handle('remove-project', (event, filePath) => {
+  const target = path.resolve(String(filePath));
+  setProjects(projects.filter(p => p !== target));
+  return true;
 });
 
 ipcMain.handle('show-save-dialog', async () => {

@@ -12,6 +12,11 @@ interface ElectronAPI {
   getInitialScene: () => Promise<{ filePath: string | null; content: string } | null>;
   autosave: (filePath: string | null, content: string | null) => Promise<boolean>;
   autosaveSync: (filePath: string | null, content: string) => true | string;
+  getProjects: () => Promise<string[]>;
+  openProject: (filePath: string) => Promise<string>;
+  addProjects: () => Promise<string[]>;
+  removeProject: (filePath: string) => Promise<boolean>;
+  onProjectsChanged: (callback: (projects: string[]) => void) => void;
   removeAllListeners: (channel: string) => void;
 }
 

@@ -28,6 +28,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autosave: (filePath, content) => ipcRenderer.invoke('autosave', filePath, content),
   autosaveSync: (filePath, content) => ipcRenderer.sendSync('autosave-sync', filePath, content),
 
+  // Projects: the files shown as tabs for one-click switching
+  getProjects: () => ipcRenderer.invoke('get-projects'),
+  openProject: (filePath) => ipcRenderer.invoke('open-project', filePath),
+  addProjects: () => ipcRenderer.invoke('add-projects'),
+  removeProject: (filePath) => ipcRenderer.invoke('remove-project', filePath),
+  onProjectsChanged: (callback) => ipcRenderer.on('projects-changed', (event, projects) => {
+    callback(projects);
+  }),
+
   // Remove listeners
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
 });
