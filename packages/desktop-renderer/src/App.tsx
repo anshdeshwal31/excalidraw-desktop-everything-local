@@ -44,6 +44,10 @@ const ExcalidrawDesktop: React.FC = () => {
   // Where each project was scrolled/zoomed, so switching back lands on the same spot
   const projectViewsRef = useRef(new Map<string, Pick<AppState, 'scrollX' | 'scrollY' | 'zoom'>>());
   const switchingRef = useRef(false);
+  // Latest autosave write, so leaving a drawing can wait for it to land
+  const autosaveWriteRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  // Scene loads (startup restore, files opened from outside, project switches) run one at a time
+  const sceneLoadRef = useRef<Promise<unknown>>(Promise.resolve());
 
   const setOpenFile = useCallback((filePath: string | null) => {
     currentFilePathRef.current = filePath;
@@ -61,20 +65,22 @@ const ExcalidrawDesktop: React.FC = () => {
   }, [excalidrawAPI]);
 
   // Write the scene to the open file (or the untitled drawing) if it changed since the last write
+  // Resolves to whether the latest write succeeded
   const flushAutosave = useCallback((sync = false) => {
     window.clearTimeout(autosaveTimerRef.current);
-    if (!electronAPI || !autosaveEnabledRef.current) return;
+    if (!electronAPI || !autosaveEnabledRef.current) return autosaveWriteRef.current;
     const json = serializeScene();
-    if (!json || json === savedJsonRef.current) return;
+    if (!json || json === savedJsonRef.current) return autosaveWriteRef.current;
     const filePath = currentFilePathRef.current;
     savedJsonRef.current = json;
     if (sync) {
       electronAPI.autosaveSync(filePath, json);
-      return;
+      return autosaveWriteRef.current;
     }
-    electronAPI.autosave(filePath, json).then(
+    autosaveWriteRef.current = electronAPI.autosave(filePath, json).then(
       () => {
         autosaveErrorRef.current = null;
+        return true;
       },
       (err) => {
         savedJsonRef.current = null; // retry on the next change
@@ -85,9 +91,23 @@ const ExcalidrawDesktop: React.FC = () => {
           autosaveErrorRef.current = message;
           alert(`Autosave failed: ${message}\nUse File > Save As to save the drawing elsewhere.`);
         }
+        return false;
       },
     );
+    return autosaveWriteRef.current;
   }, [electronAPI, serializeScene]);
+
+  // Saves the open drawing and waits for the write; false (after an alert) if it failed
+  const saveBeforeLeaving = useCallback(() => {
+    autosaveErrorRef.current = null; // report this failure even if autosave already did
+    return flushAutosave();
+  }, [flushAutosave]);
+
+  const runSceneLoad = useCallback(<T,>(task: () => Promise<T>) => {
+    const run = sceneLoadRef.current.then(task);
+    sceneLoadRef.current = run.catch(() => {});
+    return run;
+  }, []);
 
   const scheduleAutosave = useCallback(() => {
     if (!autosaveEnabledRef.current) return;
@@ -152,9 +172,10 @@ const ExcalidrawDesktop: React.FC = () => {
     if (hasUnsavedChanges() && !confirm('You have unsaved changes. Open the file anyway?')) {
       return;
     }
-    flushAutosave(); // keep pending edits of the current drawing
+    // Keep pending edits of the current drawing; if they can't be written, stay on it
+    if (!(await saveBeforeLeaving())) return;
     await loadScene(filePath, content);
-  }, [hasUnsavedChanges, flushAutosave, loadScene]);
+  }, [hasUnsavedChanges, saveBeforeLeaving, loadScene]);
 
   const handleNew = useCallback(() => {
     if (!excalidrawAPI) return;
@@ -208,54 +229,65 @@ const ExcalidrawDesktop: React.FC = () => {
   // Switch to another project in one step; the project being left is autosaved, not discarded
   const switchProject = useCallback(async (filePath: string) => {
     if (!electronAPI || !excalidrawAPI || switchingRef.current) return false;
-    if (filePath === currentFilePathRef.current) return true;
     switchingRef.current = true;
     try {
-      // Finish any text being typed so it's part of the autosave
-      (document.activeElement as HTMLElement | null)?.blur();
+      // Waits for the startup restore or a file opened from outside to finish first
+      return await runSceneLoad(async () => {
+        if (filePath === currentFilePathRef.current) return true;
+        // Finish any text being typed so it's part of the autosave
+        (document.activeElement as HTMLElement | null)?.blur();
 
-      let content: string;
-      try {
-        content = await electronAPI.openProject(filePath);
-      } catch {
-        if (confirm(`Couldn't open "${getProjectName(filePath)}". It may have been moved or deleted.\n\nRemove it from projects?`)) {
-          electronAPI.removeProject(filePath);
+        let content: string;
+        try {
+          content = await electronAPI.openProject(filePath);
+        } catch {
+          if (confirm(`Couldn't open "${getProjectName(filePath)}". It may have been moved or deleted.\n\nRemove it from projects?`)) {
+            electronAPI.removeProject(filePath);
+          }
+          return false;
         }
-        return false;
-      }
 
-      const leaving = currentFilePathRef.current;
-      if (leaving) {
-        const { scrollX, scrollY, zoom } = excalidrawAPI.getAppState();
-        projectViewsRef.current.set(leaving, { scrollX, scrollY, zoom });
-      }
+        const leaving = currentFilePathRef.current;
+        if (leaving) {
+          const { scrollX, scrollY, zoom } = excalidrawAPI.getAppState();
+          projectViewsRef.current.set(leaving, { scrollX, scrollY, zoom });
+        }
 
-      await handleFileOpened(filePath, content);
-      if (currentFilePathRef.current !== filePath) return false;
+        await handleFileOpened(filePath, content);
+        if (currentFilePathRef.current !== filePath) return false;
 
-      const view = projectViewsRef.current.get(filePath);
-      if (view) {
-        excalidrawAPI.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
-      }
-      return true;
+        // A dialog left open (e.g. Mermaid import) must not insert into the new project
+        excalidrawAPI.updateScene({ appState: { openDialog: null }, captureUpdate: CaptureUpdateAction.NEVER });
+        const view = projectViewsRef.current.get(filePath);
+        if (view) {
+          excalidrawAPI.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
+        }
+        return true;
+      });
     } finally {
       switchingRef.current = false;
     }
-  }, [electronAPI, excalidrawAPI, handleFileOpened]);
+  }, [electronAPI, excalidrawAPI, runSceneLoad, handleFileOpened]);
 
-  // Removes the tab, not the file; closing the open project moves to its neighbour
+  // Removes the tab, not the file; closing the open project moves to its neighbour.
+  // If the project can't be saved, its tab stays open rather than losing the edits.
   const removeProject = useCallback(async (filePath: string) => {
     if (!electronAPI || switchingRef.current) return;
     if (filePath === currentFilePathRef.current) {
       const index = projects.indexOf(filePath);
       const neighbor = projects[index + 1] ?? projects[index - 1];
-      if (!neighbor || !(await switchProject(neighbor))) {
-        handleNew();
-      }
+      const closed = neighbor
+        ? await switchProject(neighbor)
+        : await runSceneLoad(async () => {
+          if (!(await saveBeforeLeaving())) return false;
+          handleNew();
+          return true;
+        });
+      if (!closed) return;
     }
     projectViewsRef.current.delete(filePath);
     electronAPI.removeProject(filePath);
-  }, [electronAPI, projects, switchProject, handleNew]);
+  }, [electronAPI, projects, switchProject, runSceneLoad, saveBeforeLeaving, handleNew]);
 
   const handleAddProjects = useCallback(async () => {
     if (!electronAPI) return;
@@ -263,10 +295,17 @@ const ExcalidrawDesktop: React.FC = () => {
     if (added.length > 0) switchProject(added[0]);
   }, [electronAPI, switchProject]);
 
-  // Ctrl/Cmd+Tab cycles through projects, Ctrl/Cmd+1..9 jumps straight to one
+  // Ctrl+Tab cycles through projects, Ctrl/Cmd+1..9 jumps straight to one
+  // (on macOS Cmd+Tab belongs to the system, so cycling is Ctrl+Tab there too)
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || projects.length === 0) return;
+      // Leave the keys alone while a dialog is open or a text field has focus
+      // (text typed on the canvas itself is committed by the switch)
+      const focused = event.target instanceof HTMLElement ? event.target : null;
+      const inTextField = !!focused?.closest('input, textarea, select, [contenteditable="true"]') &&
+        !focused.classList.contains('excalidraw-wysiwyg');
+      if (inTextField || excalidrawAPI?.getAppState().openDialog) return;
 
       let target: string | undefined;
       if (event.key === 'Tab') {
@@ -286,7 +325,7 @@ const ExcalidrawDesktop: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [projects, switchProject]);
+  }, [excalidrawAPI, projects, switchProject]);
 
   // Register Electron menu event handlers once both APIs are available
   useEffect(() => {
@@ -300,7 +339,7 @@ const ExcalidrawDesktop: React.FC = () => {
         appState: { openDialog: { name: 'ttd', tab: 'mermaid' } },
       });
     });
-    electronAPI.onFileOpened(handleFileOpened);
+    electronAPI.onFileOpened((filePath, content) => runSceneLoad(() => handleFileOpened(filePath, content)));
 
     // Final save when the window closes or reloads
     const onBeforeUnload = () => flushAutosave(true);
@@ -309,12 +348,12 @@ const ExcalidrawDesktop: React.FC = () => {
     // Show the file passed on the command line or the last session, then start autosaving
     if (!initialSceneRequestedRef.current) {
       initialSceneRequestedRef.current = true;
-      electronAPI.getInitialScene()
+      runSceneLoad(() => electronAPI.getInitialScene()
         .then((scene) => scene && loadScene(scene.filePath, scene.content))
         .catch((err) => console.error('[ExcalidrawDesktop] Failed to restore last session:', err))
         .finally(() => {
           autosaveEnabledRef.current = true;
-        });
+        }));
     }
 
     return () => {
@@ -325,7 +364,7 @@ const ExcalidrawDesktop: React.FC = () => {
       electronAPI.removeAllListeners('menu-import-mermaid');
       electronAPI.removeAllListeners('file-opened');
     };
-  }, [electronAPI, excalidrawAPI, handleNew, handleSave, handleSaveAs, handleFileOpened, flushAutosave, loadScene]);
+  }, [electronAPI, excalidrawAPI, handleNew, handleSave, handleSaveAs, handleFileOpened, flushAutosave, loadScene, runSceneLoad]);
 
   return (
     <div className="excalidraw-desktop">
